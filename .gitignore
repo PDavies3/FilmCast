@@ -1,0 +1,46 @@
+# --- Data ---
+data/
+*.grib
+*.grib2
+*.nc
+*.netcdf
+*.idx
+
+# --- Credentials ---
+kaggle.json
+.env
+*.env
+secrets.yaml
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# --- Environments ---
+.venv/
+venv/
+env/
+.uv/
+
+# --- Model checkpoints / outputs ---
+checkpoints/
+predictions/
+outputs/
+results/
+*.pt
+*.pth
+*.ckpt
+runs/
+wandb/
+
+# --- OS / editor cruft ---
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# --- Jupyter ---
+.ipynb_checkpoints/

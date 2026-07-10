@@ -1,0 +1,18 @@
+[project]
+name = "film-gan-downscaling"
+version = "0.1.0"
+description = "FiLM-conditioned, resolution-adaptive GAN for S2S precipitation downscaling"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.2.0",
+    "numpy>=1.26.0",
+    "xarray>=2024.1.0",
+    "netcdf4>=1.6.5",
+    "cfgrib>=0.9.15",
+    "eccodes>=1.7.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
