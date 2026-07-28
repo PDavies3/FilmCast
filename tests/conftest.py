@@ -9,6 +9,20 @@ grid, 128x128 IMERG-ish target grid) rather than a full file-based pipeline.
 import pytest
 import torch
 
+@pytest.fixture
+def folder_tree_root(tmp_path):
+    """
+    Creates a temporary directory structure mimicking the NetCDF dataset tree
+    required for testing FolderDataset.
+    """
+    dataset_dir = tmp_path / "mock_dataset"
+    dataset_dir.mkdir()
+    
+    # Add your mock NetCDF files/directory creation here:
+    # e.g., create dummy NetCDF files for variables, static fields, etc.
+    
+    return dataset_dir
+
 
 @pytest.fixture
 def sample_batch():
