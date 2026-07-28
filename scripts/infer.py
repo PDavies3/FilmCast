@@ -2,9 +2,18 @@
 scripts/infer.py
 ------------------
 Loads a checkpoint from scripts/train.py and runs inference, saving the
-downscaled precipitation output as a NetCDF file.
+downscaled precipitation output as a NetCDF file. Two data-source modes,
+matching scripts/train.py:
 
-Real run:
+  --config <path/to/config.yml>   RECOMMENDED. Config-driven, reads the
+      per-variable-folder, per-day-file layout.
+  --data_dir <path>                Legacy: single consolidated GRIB file.
+
+Real run (config-driven, recommended):
+    python scripts/infer.py --architecture unet --checkpoint ./checkpoints/unet_epoch20.pt \
+        --config configs/ghana_precip.yml --sample_index 0 --output_dir ./predictions
+
+Real run (legacy GRIB path):
     python scripts/infer.py --architecture unet --checkpoint ./checkpoints/unet_epoch20.pt \
         --data_dir <path> --sample_index 0 --output_dir ./predictions
 
@@ -21,7 +30,6 @@ import xarray as xr
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from models import ARCHITECTURES
-from models.discriminator import Pix2PixDiscriminator
 from utils.conditioning import build_cond_vector
 
 
@@ -70,7 +78,38 @@ def run_dry_run(args, device):
     print(f">> Dry run complete. Prediction saved to {out_path}")
 
 
-def run_real_inference(args, device):
+def run_config_inference(args, device):
+    from utils.config_loader import load_config
+    from utils.folder_dataset import ConfigurableDownscalingDataset
+
+    config = load_config(args.config)
+    if args.region is not None:
+        print(f">> --region override: using '{args.region}' instead of the config's region")
+        config["region"] = args.region
+    dataset = ConfigurableDownscalingDataset(config)
+    sample = dataset[args.sample_index]
+
+    dynamic_channels = sample["dynamic_input"].shape[0]
+    static_channels = sample["static_input"].shape[0]
+    netG = load_generator(args.checkpoint, args.architecture, dynamic_channels, static_channels, device)
+
+    dynamics = sample["dynamic_input"].unsqueeze(0).to(device)
+    statics = sample["static_input"].unsqueeze(0).to(device)
+    cond = sample["cond"].unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        prediction = netG(dynamics, statics, cond)
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    meta = sample["meta"]
+    out_name = f"pred_{meta['date']}_lead{meta['lead_hours']}_m{meta['member']}.nc"
+    out_path = os.path.join(args.output_dir, out_name)
+    save_prediction(prediction[0, 0].cpu().numpy(), out_path)
+    print(f">> Prediction saved to {out_path}")
+    print(f">> Sample metadata: {meta}")
+
+
+def run_grib_inference(args, device):
     from utils.grib_dataset import S2SGribDataset
 
     dataset = S2SGribDataset(data_root=args.data_dir, split=args.split)
@@ -102,24 +141,34 @@ def run_real_inference(args, device):
 
 def main():
     parser = argparse.ArgumentParser(description="Run inference with a trained FiLM downscaling GAN")
-    parser.add_argument("--architecture", type=str, required=True, choices=["residual", "unet"])
+    parser.add_argument("--architecture", type=str, default="unet", choices=["residual", "unet"],
+                         help="Default: unet")
     parser.add_argument("--checkpoint", type=str, default=None, help="Required unless --dry_run")
-    parser.add_argument("--data_dir", type=str, default=None, help="Required unless --dry_run")
+    parser.add_argument("--config", type=str, default=None, help="Path to a YAML config (recommended)")
+    parser.add_argument("--data_dir", type=str, default=None, help="Legacy: single GRIB file. Ignored if --config given.")
+    parser.add_argument("--region", type=str, default=None,
+                         help="Override the config's region without editing the YAML, e.g. "
+                              "--region ghana / --region west_africa / --region africa.")
     parser.add_argument("--sample_index", type=int, default=0)
     parser.add_argument("--split", type=str, default="train")
     parser.add_argument("--output_dir", type=str, default="./predictions")
     parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args()
 
-    if not args.dry_run and (args.checkpoint is None or args.data_dir is None):
-        parser.error("--checkpoint and --data_dir are required unless --dry_run is set")
+    if not args.dry_run:
+        if args.checkpoint is None:
+            parser.error("--checkpoint is required unless --dry_run is set")
+        if args.config is None and args.data_dir is None:
+            parser.error("--config or --data_dir is required unless --dry_run is set")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if args.dry_run:
         run_dry_run(args, device)
+    elif args.config is not None:
+        run_config_inference(args, device)
     else:
-        run_real_inference(args, device)
+        run_grib_inference(args, device)
 
 
 if __name__ == "__main__":

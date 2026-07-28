@@ -1,0 +1,49 @@
+# configs/my_config.yml
+data_root: /home/pdavies/Documents/era5_daily_files
+
+region: ghana   # fastest option for a first CPU test run
+
+max_lead_days: 1.0   # ERA5 has no forecast lead time -- always 0
+
+inputs:
+  - name: cape
+    path: era5_cape
+    normalisation:
+      type: zscore
+      stats: {mean: 500.0, std: 800.0}   # PLACEHOLDER
+
+  - name: d2m
+    path: era5_d2m
+    normalisation:
+      type: zscore
+      stats: {mean: 295.0, std: 6.0}   # PLACEHOLDER
+
+  - name: tcw
+    path: era5_tcw
+    normalisation:
+      type: zscore
+      stats: {mean: 30.0, std: 15.0}   # PLACEHOLDER
+
+  - name: u10
+    path: era5_u10
+    normalisation:
+      type: zscore
+      stats: {mean: 0.0, std: 3.0}   # PLACEHOLDER
+
+  - name: v10
+    path: era5_v10
+    normalisation:
+      type: zscore
+      stats: {mean: 0.0, std: 3.0}   # PLACEHOLDER
+
+target:
+  name: precipitation
+  path: imerg
+  normalisation:
+    type: log1p
+    stats: {log1p_mean: 0.08, log1p_std: 0.27}   # PLACEHOLDER
+
+additional_data:
+  - latlon
+  - day_of_year
+# no additional_data_paths needed -- both are computed, no files required

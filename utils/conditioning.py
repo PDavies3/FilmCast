@@ -2,10 +2,10 @@
 utils/conditioning.py
 -----------------------
 Builds the [lead_time_norm, sin_doy, cos_doy] conditioning vector consumed
-by the FiLM-based generators (variants 5 and 6).
+by the FiLM-based generators.
 
 Uses valid_time (= init_time + lead_time), NOT the init date, for the
-day-of-year component -- lead times run out to 46 days, so a sample can
+day-of-year component -- lead times can run out many days, so a sample can
 validate in a meaningfully different season than when the forecast was
 issued.
 """
@@ -17,7 +17,7 @@ def build_cond_vector(valid_times, lead_time_days, max_lead_days):
     """
     valid_times     : iterable of numpy.datetime64 (or ISO strings), length B
     lead_time_days   : iterable of floats, length B -- lead time in days
-    max_lead_days    : float -- normalization constant (e.g. 46.0)
+    max_lead_days    : float -- normalization constant
 
     Returns: torch.FloatTensor of shape [B, 3]
     """
