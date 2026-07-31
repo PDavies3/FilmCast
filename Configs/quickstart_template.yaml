@@ -5,6 +5,9 @@ region: ghana   # fastest option for a first CPU test run
 
 max_lead_days: 1.0   # ERA5 has no forecast lead time -- always 0
 
+start_date: "2024-01-01"   # inclusive; omit to use every date found on disk
+end_date: "2024-12-31"     # inclusive
+
 inputs:
   - name: cape
     path: era5_cape

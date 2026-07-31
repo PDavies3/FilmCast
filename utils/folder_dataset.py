@@ -11,6 +11,12 @@ list (pointing at its folder). Nothing in this file needs to change.
 To train on a different region: change `region` in the config -- either a
 named preset ("africa", "west_africa", "ghana") or explicit bounds. Nothing
 in this file needs to change either.
+To restrict the samples used to a date range: set `start_date` and/or
+`end_date` in the config (inclusive, "YYYY-MM-DD" strings -- same format
+already used in the filenames, so comparison is a plain string compare,
+no parsing needed). Both are optional and independent -- give either one,
+both, or neither. Omitting both keeps the old behavior (every date
+discovered on disk is used).
 To add a new ADDITIONAL DATA feature: if it's file-backed (like elevation
 or a land mask), add its name to `additional_data` and its path to
 `additional_data_paths` in the config -- zero code changes. If it's
@@ -164,6 +170,17 @@ class ConfigurableDownscalingDataset(Dataset):
                 )
         self.max_lead_days = config.get("max_lead_days", 46.0)
 
+        # P.Davies: add -- training/inference period filtering
+        self.start_date = config.get("start_date")
+        self.end_date = config.get("end_date")
+        for label, value in (("start_date", self.start_date), ("end_date", self.end_date)):
+            if value is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value)):
+                raise ValueError(
+                    f"config['{label}'] = {value!r} is not in 'YYYY-MM-DD' format. "
+                    f"Filtering compares dates as strings, so the format must match "
+                    f"exactly, e.g. '2016-01-01'."
+                )
+
         # Index every input + target variable's files once up front:
         # {(var_name, date, lead_hours, member, level): path}
         self._file_index = {}
@@ -182,6 +199,30 @@ class ConfigurableDownscalingDataset(Dataset):
                 f"Check the path and that files match the expected "
                 f"{{var}}_{{YYYY-MM-DD}}-{{LLLL}}.nc naming pattern."
             )
+
+        # P.Davies: add -- apply start_date/end_date period filter, after
+        # confirming files exist at all, so the two failure modes ("no
+        # files on disk" vs "files exist but none fall in this period")
+        # get distinct, clear error messages instead of one confusing one.
+        if self.start_date is not None or self.end_date is not None:
+            n_before = len(self.samples)
+            self.samples = [
+                s for s in self.samples
+                if (self.start_date is None or s[0] >= self.start_date)
+                and (self.end_date is None or s[0] <= self.end_date)
+            ]
+            if not self.samples:
+                all_dates = sorted({s[0] for s in keys and []} or {})  # placeholder, replaced below
+                discovered_dates = sorted({d for d, _, _ in
+                                            sorted({(k[1], k[2], k[3]) for k in keys})})
+                raise ValueError(
+                    f"start_date/end_date filter [{self.start_date}, {self.end_date}] "
+                    f"removed all {n_before} discovered samples. Discovered dates range "
+                    f"from {discovered_dates[0]} to {discovered_dates[-1]}. Check the "
+                    f"period overlaps that range."
+                )
+            print(f"[ConfigurableDownscalingDataset] Period filter [{self.start_date or '-inf'}, "
+                  f"{self.end_date or '+inf'}]: {n_before} -> {len(self.samples)} samples.")
 
     def _index_variable(self, spec):
         var_dir = os.path.join(self.data_root, spec["path"])
@@ -257,9 +298,6 @@ class ConfigurableDownscalingDataset(Dataset):
         valid_time = init_date + np.timedelta64(lead_hours, "h")
 
         # --- Additional data (fine resolution, same grid as target) ---
-        # ctx gives computed features (day_of_year, latlon, ...) everything
-        # they might need; file-backed ones ignore it and just load+crop
-        # (+resample, if additional_data_paths[name] specifies resolution_deg).
         ctx = {
             "valid_time": valid_time,
             "shape": target_da.shape,
@@ -272,8 +310,6 @@ class ConfigurableDownscalingDataset(Dataset):
                 additional_channels.append(COMPUTED_FEATURES[name](ctx))
             else:
                 entry = self.additional_data_paths[name]
-                # entry can be a plain path string, or {path, resolution_deg}
-                # for a file-backed field that also needs resampling.
                 if isinstance(entry, dict):
                     path = os.path.join(self.data_root, entry["path"])
                     resolution_deg = entry.get("resolution_deg")
@@ -291,12 +327,6 @@ class ConfigurableDownscalingDataset(Dataset):
             "static_input": static_tensor,
             "target": target_tensor,
             "cond": cond,
-            # member=-1 is the "no ensemble" sentinel (e.g. ERA5, or a
-            # control-only field), NOT None -- PyTorch's default_collate
-            # cannot batch a list of Nones (crashes when DataLoader
-            # batches multiple such samples together), but real ensemble
-            # members are always positive integers, so -1 is unambiguous.
             "meta": {"date": date_str, "lead_hours": lead_hours,
                      "member": member if member is not None else -1},
         }
-

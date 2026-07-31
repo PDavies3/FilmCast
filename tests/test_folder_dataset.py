@@ -171,3 +171,68 @@ def test_omitting_resolution_deg_keeps_native_resolution_backward_compatible(fol
     ds = ConfigurableDownscalingDataset(config)
     sample = ds[0]
     assert sample["dynamic_input"].shape[-2] > 0  # just needs to work, shape is whatever's native
+
+
+# --- P.Davies: add -- start_date/end_date period filtering ---
+
+def test_omitting_start_end_date_uses_all_discovered_samples(folder_tree_root):
+    """Backward compatibility: no start_date/end_date means no filtering."""
+    config = _base_config(folder_tree_root["root"])
+    ds = ConfigurableDownscalingDataset(config)
+    expected = len(folder_tree_root["dates"]) * len(folder_tree_root["lead_hours"]) * len(folder_tree_root["members"])
+    assert len(ds) == expected
+
+
+def test_start_date_excludes_earlier_samples(folder_tree_root):
+    config = _base_config(folder_tree_root["root"])
+    config["start_date"] = "2020-01-01"
+    ds = ConfigurableDownscalingDataset(config)
+    dates_used = {s[0] for s in ds.samples}
+    assert "2019-12-31" not in dates_used
+    assert dates_used == {"2020-01-01", "2020-06-15", "2020-12-31", "2021-01-01"}
+
+
+def test_end_date_excludes_later_samples(folder_tree_root):
+    config = _base_config(folder_tree_root["root"])
+    config["end_date"] = "2020-12-31"
+    ds = ConfigurableDownscalingDataset(config)
+    dates_used = {s[0] for s in ds.samples}
+    assert "2021-01-01" not in dates_used
+    assert dates_used == {"2019-12-31", "2020-01-01", "2020-06-15", "2020-12-31"}
+
+
+def test_start_and_end_date_together_define_inclusive_range(folder_tree_root):
+    config = _base_config(folder_tree_root["root"])
+    config["start_date"] = "2020-01-01"
+    config["end_date"] = "2020-12-31"
+    ds = ConfigurableDownscalingDataset(config)
+    dates_used = {s[0] for s in ds.samples}
+    assert dates_used == {"2020-01-01", "2020-06-15", "2020-12-31"}
+
+
+def test_start_date_boundary_is_inclusive(folder_tree_root):
+    config = _base_config(folder_tree_root["root"])
+    config["start_date"] = "2020-01-01"  # exact date that exists in the fixture
+    ds = ConfigurableDownscalingDataset(config)
+    assert "2020-01-01" in {s[0] for s in ds.samples}
+
+
+def test_end_date_boundary_is_inclusive(folder_tree_root):
+    config = _base_config(folder_tree_root["root"])
+    config["end_date"] = "2020-12-31"  # exact date that exists in the fixture
+    ds = ConfigurableDownscalingDataset(config)
+    assert "2020-12-31" in {s[0] for s in ds.samples}
+
+
+def test_period_filter_removing_all_samples_raises_clear_error(folder_tree_root):
+    config = _base_config(folder_tree_root["root"])
+    config["start_date"] = "2099-01-01"
+    with pytest.raises(ValueError, match="removed all"):
+        ConfigurableDownscalingDataset(config)
+
+
+def test_invalid_start_date_format_raises_clear_error(folder_tree_root):
+    config = _base_config(folder_tree_root["root"])
+    config["start_date"] = "01-01-2020"  # wrong format, must be YYYY-MM-DD
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        ConfigurableDownscalingDataset(config)
