@@ -12,30 +12,24 @@ To train on a different region: change `region` in the config -- either a
 named preset ("africa", "west_africa", "ghana") or explicit bounds. Nothing
 in this file needs to change either.
 To restrict the samples used to a date range: set `start_date` and/or
-`end_date` in the config (inclusive, "YYYY-MM-DD" strings -- same format
-already used in the filenames, so comparison is a plain string compare,
-no parsing needed). Both are optional and independent -- give either one,
-both, or neither. Omitting both keeps the old behavior (every date
-discovered on disk is used).
+`end_date` in the config (inclusive, "YYYY-MM-DD" strings).
+To convert a variable's raw units before normalization (e.g. ERA5 tp is
+in meters, target IMERG is in mm/day -- set `scale: 1000` on that input
+or target entry to convert meters -> mm before normalize() ever sees it).
+Omit `scale` for variables that need no conversion.
 To add a new ADDITIONAL DATA feature: if it's file-backed (like elevation
 or a land mask), add its name to `additional_data` and its path to
 `additional_data_paths` in the config -- zero code changes. If it's
 COMPUTED with no file behind it (like day_of_year or latlon), register a
-function in utils/additional_features.py once -- after that, every future
-config can use it by name with zero further code changes either.
+function in utils/additional_features.py once.
 
 RESOLUTION: any input, the target, or a file-backed additional_data entry
 can optionally specify `resolution_deg` -- when given, that variable is
 resampled (bilinear) onto a regular grid at exactly that resolution
 spanning the region, regardless of what resolution the source file
-actually ships at. This means mismatched native resolutions across
-different data sources (e.g. ERA5 vs IFS, or different CHIRPS versions)
-don't leak into training as an accident of whatever's in the file --
-you explicitly declare what resolution you want. Omitting it keeps the
-old behavior (crop only, native resolution) for backward compatibility.
+actually ships at.
 
-Each ensemble member is a separate sample (matches the earlier design
-decision to not average across the ensemble).
+Each ensemble member is a separate sample.
 """
 import glob
 import os
@@ -58,10 +52,7 @@ _LEVEL_RE = re.compile(r"level_(-?\d+)")
 
 def _crop_region(da, region):
     """Crops a DataArray to a lat/lon bounding box, correctly handling
-    BOTH ascending and descending coordinate ordering (your confirmed real
-    data has descending latitude: 39 -> -36 -- naive slice(lat_min, lat_max)
-    silently returns an EMPTY array on descending coords rather than
-    erroring, so this checks ordering explicitly rather than assuming it)."""
+    BOTH ascending and descending coordinate ordering."""
     if region is None:
         return da
 
@@ -88,9 +79,7 @@ def _crop_region(da, region):
 
 def _resample_to_resolution(da, region, resolution_deg):
     """Resamples (bilinear) onto a regular grid at exactly resolution_deg
-    spanning the region, regardless of the source file's native
-    resolution. Preserves the source's coordinate ordering (ascending vs
-    descending) so this composes correctly with _crop_region either way."""
+    spanning the region, regardless of the source file's native resolution."""
     if resolution_deg is None:
         return da
 
@@ -121,11 +110,7 @@ def _resample_to_resolution(da, region, resolution_deg):
 
 
 def _parse_path(path):
-    """Extracts (date, lead_hours, member, level) from a file's full path.
-    lead_hours defaults to 0 when the filename has no -{LLLL} suffix --
-    this is the ERA5 case: reanalysis is a single "truth" snapshot per
-    date, not a forecast with a lead time, so 0 is the physically correct
-    interpretation (not a missing-data placeholder)."""
+    """Extracts (date, lead_hours, member, level) from a file's full path."""
     fname = os.path.basename(path)
     m = _FILENAME_RE.match(fname)
     if not m:
@@ -152,58 +137,40 @@ class ConfigurableDownscalingDataset(Dataset):
             raise ValueError(
                 "config['additional_data'] must have at least one entry. "
                 "The FiLM generators derive their OUTPUT RESOLUTION from "
-                "static_input.shape at forward-time (static_input is built "
-                "from additional_data) -- with none, there's no way to "
-                "know what resolution to produce. Add at least a file-"
-                "backed field (e.g. 'elevation') or a computed one (e.g. "
-                "'latlon')."
+                "static_input.shape at forward-time -- with none, there's "
+                "no way to know what resolution to produce."
             )
         for name in self.additional_data:
             if name not in COMPUTED_FEATURES and name not in self.additional_data_paths:
                 raise ValueError(
                     f"additional_data entry '{name}' is not a registered "
                     f"computed feature ({list(COMPUTED_FEATURES.keys())}) "
-                    f"and has no path in additional_data_paths. Either "
-                    f"register it as a computed feature in "
-                    f"utils/additional_features.py, or add "
-                    f"additional_data_paths['{name}'] pointing at its file."
+                    f"and has no path in additional_data_paths."
                 )
         self.max_lead_days = config.get("max_lead_days", 46.0)
 
-        # P.Davies: add -- training/inference period filtering
         self.start_date = config.get("start_date")
         self.end_date = config.get("end_date")
         for label, value in (("start_date", self.start_date), ("end_date", self.end_date)):
             if value is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value)):
                 raise ValueError(
-                    f"config['{label}'] = {value!r} is not in 'YYYY-MM-DD' format. "
-                    f"Filtering compares dates as strings, so the format must match "
-                    f"exactly, e.g. '2016-01-01'."
+                    f"config['{label}'] = {value!r} is not in 'YYYY-MM-DD' format."
                 )
 
-        # Index every input + target variable's files once up front:
-        # {(var_name, date, lead_hours, member, level): path}
         self._file_index = {}
         for spec in self.inputs_spec + [self.target_spec]:
             self._index_variable(spec)
 
-        # Sample list discovered from the FIRST input variable
         probe_name = self.inputs_spec[0]["name"]
         keys = [k for k in self._file_index if k[0] == probe_name]
-        self.samples = sorted({(k[1], k[2], k[3]) for k in keys})  # (date, lead_hours, member)
+        self.samples = sorted({(k[1], k[2], k[3]) for k in keys})
 
         if not self.samples:
             raise FileNotFoundError(
                 f"No samples discovered for '{probe_name}' under "
-                f"{os.path.join(self.data_root, self.inputs_spec[0]['path'])}. "
-                f"Check the path and that files match the expected "
-                f"{{var}}_{{YYYY-MM-DD}}-{{LLLL}}.nc naming pattern."
+                f"{os.path.join(self.data_root, self.inputs_spec[0]['path'])}."
             )
 
-        # P.Davies: add -- apply start_date/end_date period filter, after
-        # confirming files exist at all, so the two failure modes ("no
-        # files on disk" vs "files exist but none fall in this period")
-        # get distinct, clear error messages instead of one confusing one.
         if self.start_date is not None or self.end_date is not None:
             n_before = len(self.samples)
             self.samples = [
@@ -212,14 +179,12 @@ class ConfigurableDownscalingDataset(Dataset):
                 and (self.end_date is None or s[0] <= self.end_date)
             ]
             if not self.samples:
-                all_dates = sorted({s[0] for s in keys and []} or {})  # placeholder, replaced below
                 discovered_dates = sorted({d for d, _, _ in
                                             sorted({(k[1], k[2], k[3]) for k in keys})})
                 raise ValueError(
                     f"start_date/end_date filter [{self.start_date}, {self.end_date}] "
                     f"removed all {n_before} discovered samples. Discovered dates range "
-                    f"from {discovered_dates[0]} to {discovered_dates[-1]}. Check the "
-                    f"period overlaps that range."
+                    f"from {discovered_dates[0]} to {discovered_dates[-1]}."
                 )
             print(f"[ConfigurableDownscalingDataset] Period filter [{self.start_date or '-inf'}, "
                   f"{self.end_date or '+inf'}]: {n_before} -> {len(self.samples)} samples.")
@@ -235,9 +200,6 @@ class ConfigurableDownscalingDataset(Dataset):
             self._file_index[(spec["name"], date_str, lead_hours, member, level)] = path
 
     def _resolve_path(self, var_name, date_str, lead_hours, member, level):
-        """Looks up the exact file for this variable+sample. Falls back to
-        member=None if the variable has no ensemble spread (e.g. a
-        control-only field), and level=None if it's single-level."""
         key = (var_name, date_str, lead_hours, member, level)
         if key in self._file_index:
             return self._file_index[key]
@@ -250,19 +212,6 @@ class ConfigurableDownscalingDataset(Dataset):
         )
 
     def _load_cropped(self, path, resolution_deg=None):
-        """Returns the region-cropped (and, if resolution_deg is given,
-        resampled) xr.DataArray -- keeps coords, so callers can pull
-        lat/lon reference values from it, not just .values.
-
-        When resolution_deg is given, interpolation happens directly on
-        the FULL source array rather than a pre-crop: cropping first with
-        exact region bounds can leave the crop narrower than requested
-        when the source grid is coarse relative to the region's edges
-        (e.g. a 1.5deg grid's nearest point to a boundary can be up to
-        ~0.75deg short of it) -- resampling to a FINER target grid would
-        then reach for points outside that narrowed crop and fail.
-        Interpolating from the uncropped array always has real
-        surrounding data available near the boundary."""
         ds = xr.open_dataset(path)
         var_name = list(ds.data_vars)[0]
         da_full = ds[var_name]
@@ -283,17 +232,25 @@ class ConfigurableDownscalingDataset(Dataset):
             for level in levels:
                 path = self._resolve_path(spec["name"], date_str, lead_hours, member, level)
                 da = self._load_cropped(path, spec.get("resolution_deg"))
-                arr = normalize(da.values, spec["normalisation"])
+                arr = da.values
+                scale = spec.get("scale")
+                if scale is not None:
+                    arr = arr * scale
+                arr = normalize(arr, spec["normalisation"])
                 channels.append(arr)
         dynamic_tensor = torch.from_numpy(np.stack(channels, axis=0)).float()
 
         # --- Target (fine resolution) ---
         target_path = self._resolve_path(self.target_spec["name"], date_str, lead_hours, member, None)
         target_da = self._load_cropped(target_path, self.target_spec.get("resolution_deg"))
-        target_arr = normalize(target_da.values, self.target_spec["normalisation"])
+        target_arr = target_da.values
+        target_scale = self.target_spec.get("scale")
+        if target_scale is not None:
+            target_arr = target_arr * target_scale
+        target_arr = normalize(target_arr, self.target_spec["normalisation"])
         target_tensor = torch.from_numpy(target_arr).float().unsqueeze(0)
 
-        # --- valid_time (needed for computed features AND the cond vector) ---
+        # --- valid_time ---
         init_date = np.datetime64(date_str)
         valid_time = init_date + np.timedelta64(lead_hours, "h")
 
@@ -327,6 +284,8 @@ class ConfigurableDownscalingDataset(Dataset):
             "static_input": static_tensor,
             "target": target_tensor,
             "cond": cond,
+            "lat": torch.from_numpy(np.asarray(ctx["lat"]).copy()).float(),
+            "lon": torch.from_numpy(np.asarray(ctx["lon"]).copy()).float(),
             "meta": {"date": date_str, "lead_hours": lead_hours,
                      "member": member if member is not None else -1},
         }

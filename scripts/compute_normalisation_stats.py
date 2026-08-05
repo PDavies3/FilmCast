@@ -1,0 +1,157 @@
+"""
+scripts/compute_normalisation_stats.py
+-----------------------------------------
+Computes REAL mean/std (for zscore inputs) and log1p mean/std (for the
+log1p target) directly from the data a config points at -- replacing
+placeholder stats with numbers that actually reflect this dataset's
+distribution.
+
+Reuses ConfigurableDownscalingDataset's file discovery, region-cropping,
+and resampling logic directly (via its _resolve_path/_load_cropped
+methods) instead of duplicating it, so stats are computed over EXACTLY
+the same data (region, resolution_deg, start_date/end_date period) the
+model will actually train on.
+
+Deliberately does NOT read the config's existing normalisation.stats at
+all for this computation -- only paths/region/period/resolution_deg are
+used. Stats are computed over every discovered sample (all dates, lead
+times, ensemble members) for each variable.
+
+IMPORTANT: compute stats from your TRAINING config only. If you have a
+separate validation or inference config with a different date range,
+copy the exact same numbers into it by hand rather than recomputing --
+the model must see input distributions normalized consistently across
+train/val/inference, or the stats themselves become a source of train/
+inference mismatch.
+
+Usage:
+    python scripts/compute_normalisation_stats.py --config configs/quickstart_template.yaml
+    python scripts/compute_normalisation_stats.py --config configs/quickstart_template.yaml --write
+"""
+import argparse
+import os
+import shutil
+import sys
+
+import numpy as np
+import yaml
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from utils.config_loader import load_config
+from utils.folder_dataset import ConfigurableDownscalingDataset
+
+
+def _collect_values(dataset, spec):
+    """Loads every file for one variable spec (all discovered samples,
+    all levels) and returns a single concatenated 1D array of raw
+    (un-normalized, but UNIT-CONVERTED per spec['scale']) values --
+    region-cropped/resampled exactly as training will see them."""
+    values = []
+    levels = spec.get("levels", [None])
+    seen_keys = set()
+    scale = spec.get("scale")
+    for date_str, lead_hours, member in dataset.samples:
+        for level in levels:
+            key = (spec["name"], date_str, lead_hours, member, level)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            try:
+                path = dataset._resolve_path(spec["name"], date_str, lead_hours, member, level)
+            except KeyError:
+                continue
+            da = dataset._load_cropped(path, spec.get("resolution_deg"))
+            arr = da.values
+            if scale is not None:
+                arr = arr * scale
+            values.append(np.asarray(arr).ravel())
+    if not values:
+        raise RuntimeError(f"No files could be loaded for variable '{spec['name']}' -- "
+                            f"cannot compute stats.")
+    return np.concatenate(values)
+
+
+def compute_zscore_stats(values):
+    return {"mean": float(np.mean(values)), "std": float(np.std(values))}
+
+
+def compute_log1p_stats(values):
+    log_values = np.log1p(np.clip(values, a_min=0, a_max=None))
+    return {"log1p_mean": float(np.mean(log_values)), "log1p_std": float(np.std(log_values))}
+
+
+def _write_stats_into_config(config_path, results):
+    """Rewrites ONLY the stats values in the original YAML file. NOTE:
+    PyYAML round-tripping does NOT preserve comments (e.g. the
+    '# PLACEHOLDER' markers or a header comment will be lost) -- a .bak
+    of the original is written first specifically so nothing is
+    unrecoverable."""
+    shutil.copy(config_path, config_path + ".bak")
+
+    with open(config_path) as f:
+        raw_config = yaml.safe_load(f)
+
+    for spec in raw_config.get("inputs", []):
+        if spec["name"] in results:
+            _, stats = results[spec["name"]]
+            spec["normalisation"]["stats"] = stats
+
+    target_spec = raw_config.get("target", {})
+    if target_spec.get("name") in results:
+        _, stats = results[target_spec["name"]]
+        target_spec["normalisation"]["stats"] = stats
+
+    with open(config_path, "w") as f:
+        yaml.safe_dump(raw_config, f, sort_keys=False, default_flow_style=False)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Compute real normalisation stats from a config's actual data."
+    )
+    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--write", action="store_true",
+                         help="Rewrite the config file's normalisation.stats in place "
+                              "(a .bak backup is kept). Without this, stats are only printed.")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    print(f">> Computing stats from: {config['data_root']}")
+    print(f">> Region: {config.get('region')}  Period: {config.get('start_date', 'earliest')} "
+          f"to {config.get('end_date', 'latest')}\n")
+
+    dataset = ConfigurableDownscalingDataset(config)
+    print(f">> {len(dataset)} samples discovered.\n")
+
+    results = {}
+
+    for spec in config["inputs"]:
+        print(f">> Computing stats for input '{spec['name']}' ...")
+        values = _collect_values(dataset, spec)
+        stats = compute_zscore_stats(values)
+        results[spec["name"]] = ("zscore", stats)
+        print(f"   n_pixels={values.size}  mean={stats['mean']:.4f}  std={stats['std']:.4f}\n")
+
+    target_spec = config["target"]
+    print(f">> Computing stats for target '{target_spec['name']}' ...")
+    target_values = _collect_values(dataset, target_spec)
+    norm_type = target_spec["normalisation"]["type"]
+    stats = compute_log1p_stats(target_values) if norm_type == "log1p" else compute_zscore_stats(target_values)
+    results[target_spec["name"]] = (norm_type, stats)
+    print(f"   n_pixels={target_values.size}  " + "  ".join(f"{k}={v:.4f}" for k, v in stats.items()) + "\n")
+
+    print("=" * 60)
+    print("RESULTS -- paste into your config's normalisation.stats:")
+    print("=" * 60)
+    for name, (norm_type, stats) in results.items():
+        stats_str = ", ".join(f"{k}: {v:.4f}" for k, v in stats.items())
+        print(f"  {name} ({norm_type}): {{{stats_str}}}")
+
+    if args.write:
+        _write_stats_into_config(args.config, results)
+        print(f"\n>> Config updated in place: {args.config} (backup saved as {args.config}.bak)")
+
+
+if __name__ == "__main__":
+    main()

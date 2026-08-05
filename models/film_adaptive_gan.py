@@ -38,6 +38,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from utils.norm_layers import make_group_norm
+
 
 class FiLM(nn.Module):
     """Produces per-channel scale/shift from a conditioning vector and
@@ -61,11 +63,11 @@ class FiLMResidualBlock(nn.Module):
     def __init__(self, channels, cond_dim):
         super().__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(channels)
+        self.bn1 = make_group_norm(channels)  # P.Davies: add -- GroupNorm replaces BatchNorm2d
         self.film1 = FiLM(cond_dim, channels)
         self.act = nn.PReLU()
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(channels)
+        self.bn2 = make_group_norm(channels)  # P.Davies: add -- GroupNorm replaces BatchNorm2d
         self.film2 = FiLM(cond_dim, channels)
 
     def forward(self, x, cond):
@@ -81,9 +83,9 @@ class SpatialAttentionGate(nn.Module):
     topography transitions using a gated attention mechanism."""
     def __init__(self, F_g, F_l, F_int):
         super().__init__()
-        self.W_g = nn.Sequential(nn.Conv2d(F_g, F_int, kernel_size=1), nn.BatchNorm2d(F_int))
-        self.W_x = nn.Sequential(nn.Conv2d(F_l, F_int, kernel_size=1), nn.BatchNorm2d(F_int))
-        self.psi = nn.Sequential(nn.Conv2d(F_int, 1, kernel_size=1), nn.BatchNorm2d(1), nn.Sigmoid())
+        self.W_g = nn.Sequential(nn.Conv2d(F_g, F_int, kernel_size=1), make_group_norm(F_int))
+        self.W_x = nn.Sequential(nn.Conv2d(F_l, F_int, kernel_size=1), make_group_norm(F_int))
+        self.psi = nn.Sequential(nn.Conv2d(F_int, 1, kernel_size=1), make_group_norm(1), nn.Sigmoid())
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, g, x):
@@ -121,7 +123,14 @@ class FiLMAdaptiveGenerator(nn.Module):
 
         self.reconstruct = nn.Sequential(
             nn.Conv2d(base_channels * 2, base_channels, kernel_size=3, padding=1), nn.PReLU(),
-            nn.Conv2d(base_channels, out_channels, kernel_size=1), nn.ReLU(),
+            # P.Davies: add -- no final activation. Output is a NORMALIZED
+            # value (compared against a normalized target that can be
+            # negative -- e.g. zero precip normalizes to a negative
+            # number), not physical precipitation. A ReLU here floors
+            # output at 0, making every dry pixel's target unreachable and
+            # killing gradient flow. Non-negativity belongs at physical-
+            # units time (after denormalize()), not inside the network.
+            nn.Conv2d(base_channels, out_channels, kernel_size=1),
         )
 
     def forward(self, dynamic_in, static_in, cond):

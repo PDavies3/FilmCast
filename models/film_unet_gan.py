@@ -27,6 +27,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from utils.norm_layers import make_group_norm
+
 
 class FiLM(nn.Module):
     def __init__(self, cond_dim, channels):
@@ -41,12 +43,12 @@ class FiLM(nn.Module):
 
 
 class FiLMConvBlock(nn.Module):
-    """Conv -> BN -> FiLM -> activation, used as the basic unit in both
+    """Conv -> Norm -> FiLM -> activation, used as the basic unit in both
     the encoder and decoder paths."""
     def __init__(self, in_ch, out_ch, cond_dim, activation="relu"):
         super().__init__()
         self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False)
-        self.bn = nn.BatchNorm2d(out_ch)
+        self.bn = make_group_norm(out_ch)  # P.Davies: add -- GroupNorm replaces BatchNorm2d
         self.film = FiLM(cond_dim, out_ch)
         self.act = nn.LeakyReLU(0.2, inplace=True) if activation == "leaky" else nn.ReLU(inplace=True)
 
@@ -126,7 +128,8 @@ class FiLMUNetGenerator(nn.Module):
 
         self.final = nn.Sequential(
             nn.Conv2d(running_ch, out_channels, kernel_size=1),
-            nn.ReLU(),  # non-negativity constraint for physical precipitation
+            # P.Davies: add -- no final activation; see film_adaptive_gan.py
+            # for why (output is normalized, target can be negative).
         )
 
     def forward(self, dynamic_in, static_in, cond):

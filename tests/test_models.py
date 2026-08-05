@@ -9,12 +9,22 @@ Covers, for both architectures ("residual" and "unet"):
     genuinely works, not just on convenient sizes.
   - gradient flow through the conditioning vector and through every FiLM
     parameter specifically
-  - physical non-negativity constraint
   - the model factory (get_model) wires everything correctly
+  - non-negativity is verified at the DENORMALIZE+CLIP stage (physical
+    units), not on raw model output -- raw output is a NORMALIZED value
+    and can legitimately be negative (e.g. zero precipitation itself
+    normalizes to a negative number under log1p). The network's final
+    activation used to be a ReLU enforcing non-negativity in normalized
+    space, which made every dry-pixel target unreachable and killed
+    gradient flow -- removed for that reason. See
+    scripts/predict_period.py / scripts/infer.py for where the physical
+    non-negativity clip now actually lives.
 """
+import numpy as np
 import pytest
 import torch
 from models import get_model, ARCHITECTURES
+from utils.normalisation import denormalize
 
 
 def _make_cond(batch_size):
@@ -39,7 +49,10 @@ def test_forward_shape_matches_fixture_resolution(architecture, sample_batch):
 
     expected_shape = (sample_batch["dynamic_input"].shape[0], 1, *sample_batch["static_input"].shape[-2:])
     assert out.shape == expected_shape
-    assert torch.all(out >= 0), "Physical constraint violated: negative precipitation"
+    # P.Davies: add -- non-negativity is no longer enforced inside the
+    # network (output is a NORMALIZED value, which can be negative). See
+    # test_denormalize_and_clip_enforces_non_negativity below for where
+    # that guarantee now actually lives.
 
 
 @pytest.mark.parametrize("architecture", list(ARCHITECTURES.keys()))
@@ -58,7 +71,7 @@ def test_resolution_adaptivity_same_weights_different_output_size(architecture, 
 
     out = netG(sample_batch["dynamic_input"], static_at_target_res, cond)
     assert out.shape == (batch_size, 1, *target_hw)
-    assert torch.all(out >= 0)
+    # non-negativity no longer enforced inside the network -- see note above
 
 
 @pytest.mark.parametrize("architecture", list(ARCHITECTURES.keys()))
@@ -84,3 +97,15 @@ def test_gradient_flows_through_film_conditioning(architecture, sample_batch):
 
     all_dead = [n for n, p in netG.named_parameters() if p.grad is None]
     assert not all_dead, f"Parameters with NO gradient at all (dead/unused): {all_dead}"
+
+
+def test_denormalize_and_clip_enforces_non_negativity():
+    """The non-negativity guarantee now lives at physical-units time
+    (denormalize + clip in scripts/predict_period.py / infer.py), not
+    inside the network. This is the guarantee that replaced the old
+    in-network ReLU."""
+    raw_normalized = np.array([-2.0, -0.5, 0.0, 0.5, 2.0])
+    norm_config = {"type": "log1p", "stats": {"log1p_mean": 0.08, "log1p_std": 0.27}}
+    physical = denormalize(raw_normalized, norm_config)
+    clipped = np.clip(physical, a_min=0, a_max=None)
+    assert np.all(clipped >= 0)

@@ -1,54 +1,60 @@
-# configs/quickstart_inference.yaml
-# Same variable set and normalisation stats as quickstart_template.yaml --
-# input/target channel counts must match the checkpoint you're loading.
-# Only start_date/end_date differ, pointing at a held-out period.
 data_root: /home/pdavies/Documents/era5_daily_files
-
 region: ghana
-
 max_lead_days: 1.0
-
-start_date: "2025-01-01"   # held out from training (2016-2020 above)
-end_date: "2025-12-31"
-
+start_date: '2025-01-01'
+end_date: '2025-12-31'
 inputs:
-  - name: cape
-    path: era5_cape
-    normalisation:
-      type: zscore
-      stats: {mean: 500.0, std: 800.0}   # must match training stats exactly
-
-  - name: d2m
-    path: era5_d2m
-    normalisation:
-      type: zscore
-      stats: {mean: 295.0, std: 6.0}
-
-  - name: tcw
-    path: era5_tcw
-    normalisation:
-      type: zscore
-      stats: {mean: 30.0, std: 15.0}
-
-  - name: u10
-    path: era5_u10
-    normalisation:
-      type: zscore
-      stats: {mean: 0.0, std: 3.0}
-
-  - name: v10
-    path: era5_v10
-    normalisation:
-      type: zscore
-      stats: {mean: 0.0, std: 3.0}
-
+- name: cape
+  path: era5_cape
+  normalisation:
+    type: zscore
+    stats:
+      mean: 680.211181640625
+      std: 664.0623168945312
+- name: tp
+  path: era5_tp
+  scale: 1000
+  normalisation:
+    type: log1p
+    stats:
+      log1p_mean: 3.052427291870117
+      log1p_std: 7.152277946472168
+- name: d2m
+  path: era5_d2m
+  normalisation:
+    type: zscore
+    stats:
+      mean: 294.8641052246094
+      std: 5.341831207275391
+- name: tcw
+  path: era5_tcw
+  normalisation:
+    type: zscore
+    stats:
+      mean: 1098.9129638671875
+      std: 291.0619812011719
+- name: u10
+  path: era5_u10
+  normalisation:
+    type: zscore
+    stats:
+      mean: 0.9532492756843567
+      std: 1.4311678409576416
+- name: v10
+  path: era5_v10
+  normalisation:
+    type: zscore
+    stats:
+      mean: 1.534293532371521
+      std: 1.391543984413147
 target:
   name: precipitation
   path: imerg
   normalisation:
     type: log1p
-    stats: {log1p_mean: 0.08, log1p_std: 0.27}
-
+    stats:
+      log1p_mean: 0.7147529721260071
+      log1p_std: 1.0967700481414795
 additional_data:
-  - latlon
-  - day_of_year
+- latlon
+- day_of_year

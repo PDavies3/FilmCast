@@ -1,0 +1,76 @@
+data_root: /home/pdavies/Documents/era5_daily_files
+region: ghana
+max_lead_days: 1.0
+start_date: '2024-11-01'
+end_date: '2024-12-31'
+inputs:
+- name: cape
+  path: era5_cape
+  normalisation:
+    type: zscore
+    stats:
+      mean: 500.0
+      std: 800.0
+- name: d2m
+  path: era5_d2m
+  normalisation:
+    type: zscore
+    stats:
+      mean: 295.0
+      std: 6.0
+- name: tcw
+  path: era5_tcw
+  normalisation:
+    type: zscore
+    stats:
+      mean: 30.0
+      std: 15.0
+- name: u10
+  path: era5_u10
+  normalisation:
+    type: zscore
+    stats:
+      mean: 0.0
+      std: 3.0
+- name: v10
+  path: era5_v10
+  normalisation:
+    type: zscore
+    stats:
+      mean: 0.0
+      std: 3.0
+- name: tp
+  path: era5_tp
+  scale: 1000
+  normalisation:
+    type: log1p
+    stats:
+      log1p_mean: 3.052427291870117
+      log1p_std: 7.152277946472168
+- name: tp
+  path: era5_tp
+  scale: 1000
+  normalisation:
+    type: log1p
+    stats:
+      log1p_mean: 3.052427291870117
+      log1p_std: 7.152277946472168
+- name: tp
+  path: era5_tp
+  scale: 1000
+  normalisation:
+    type: log1p
+    stats:
+      log1p_mean: 3.052427291870117
+      log1p_std: 7.152277946472168
+target:
+  name: precipitation
+  path: imerg
+  normalisation:
+    type: log1p
+    stats:
+      log1p_mean: 0.08
+      log1p_std: 0.27
+additional_data:
+- latlon
+- day_of_year

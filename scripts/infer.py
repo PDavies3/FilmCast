@@ -9,6 +9,12 @@ matching scripts/train.py:
       per-variable-folder, per-day-file layout.
   --data_dir <path>                Legacy: single consolidated GRIB file.
 
+For the config-driven path, output is saved in PHYSICAL units (denormalize()
+applied, then clipped to non-negative) and georeferenced with the sample's
+real lat/lon coordinates. The --dry_run and legacy GRIB paths have no real
+coordinates or a normalisation config to denormalize against, so they
+stay on raw normalized output and anonymous y/x indices as before.
+
 Real run (config-driven, recommended):
     python scripts/infer.py --architecture unet --checkpoint ./checkpoints/unet_epoch20.pt \
         --config configs/ghana_precip.yml --sample_index 0 --output_dir ./predictions
@@ -24,6 +30,7 @@ import argparse
 import os
 import sys
 
+import numpy as np
 import torch
 import xarray as xr
 
@@ -31,6 +38,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from models import ARCHITECTURES
 from utils.conditioning import build_cond_vector
+from utils.normalisation import denormalize
 
 
 def load_generator(checkpoint_path, architecture, dynamic_channels, static_channels, device):
@@ -70,7 +78,12 @@ def run_dry_run(args, device):
         prediction = netG(dynamics, statics, cond)
 
     print("Prediction shape:", prediction.shape)
-    assert torch.all(prediction >= 0), "Non-negativity constraint violated"
+    # Note: raw model output is in normalized space and is NOT guaranteed
+    # non-negative (zero precipitation itself normalizes to a negative
+    # number under log1p) -- the non-negativity constraint now applies at
+    # physical-units time (after denormalize()), not here. See
+    # run_config_inference() below for where that clip actually happens
+    # on a real run.
 
     os.makedirs(args.output_dir, exist_ok=True)
     out_path = os.path.join(args.output_dir, f"{args.architecture}_dryrun_prediction.nc")
@@ -100,11 +113,18 @@ def run_config_inference(args, device):
     with torch.no_grad():
         prediction = netG(dynamics, statics, cond)
 
+    # P.Davies: add -- convert normalized model output to physical units,
+    # then clip to physically valid (non-negative) range.
+    target_norm_config = config["target"]["normalisation"]
+    pred_physical = denormalize(prediction[0, 0].cpu().numpy(), target_norm_config)
+    pred_physical = np.clip(pred_physical, a_min=0, a_max=None)
+
     os.makedirs(args.output_dir, exist_ok=True)
     meta = sample["meta"]
     out_name = f"pred_{meta['date']}_lead{meta['lead_hours']}_m{meta['member']}.nc"
     out_path = os.path.join(args.output_dir, out_name)
-    save_prediction(prediction[0, 0].cpu().numpy(), out_path)
+    save_prediction(pred_physical, out_path,
+                     lat=sample["lat"].numpy(), lon=sample["lon"].numpy())
     print(f">> Prediction saved to {out_path}")
     print(f">> Sample metadata: {meta}")
 
